@@ -121,6 +121,21 @@ def main():
         generator.setup_environment()
         generator.get_data_summary()
         success_count = generator.generate_timetables()
+        
+        # Generate 7th semester unified timetable with baskets
+        try:
+            print("\n" + "="*80)
+            print("GENERATING SEMESTER 7 UNIFIED TIMETABLE")
+            print("="*80)
+            if generator.excel_exporter.export_semester7_timetable():
+                print("SUCCESS: Semester 7 timetable generated")
+            else:
+                print("FAILED: Semester 7 timetable generation failed")
+        except Exception as e:
+            print(f"ERROR generating Semester 7 timetable: {e}")
+            import traceback
+            traceback.print_exc()
+        
         generator.print_summary(success_count, len(TARGET_SEMESTERS))
 
         # Validate room allocation conflicts

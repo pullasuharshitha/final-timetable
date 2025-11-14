@@ -441,3 +441,248 @@ class ExcelExporter:
             summary_df.to_excel(writer, sheet_name='Course_Summary', index=False, startrow=2)
         except Exception as e:
             print(f"FAILED: Could not add course summary: {e}")
+    
+    def export_semester7_timetable(self):
+        """Export special unified timetable for 7th semester with baskets.
+        Creates:
+        1. Main timetable showing baskets (7B1, 7B2, 7B3, 7B4) - 9:00 AM to 5:30 PM only, 2 classes per basket
+        2. Basket assignments sheet (which courses go to which baskets)"""
+        semester = 7
+        print(f"\n{'='*60}")
+        print(f"GENERATING SEMESTER {semester} UNIFIED TIMETABLE (BASKETS)")
+        print(f"{'='*60}")
+        # Reset color map for each workbook
+        self._course_color_map = {}
+        
+        filename = f"sem{semester}_timetable.xlsx"
+        filepath = FileManager.get_output_path(filename)
+        
+        # Attempt to open writer
+        try:
+            writer = pd.ExcelWriter(filepath, engine='openpyxl')
+        except PermissionError as pe:
+            print(f"\nWARNING: Cannot write to {filepath} (Permission denied / file may be open).")
+            import time
+            timestamp = int(time.time())
+            alt_filename = f"sem{semester}_timetable_{timestamp}.xlsx"
+            alt_filepath = FileManager.get_output_path(alt_filename)
+            print(f"Attempting alternative filename: {alt_filename}")
+            try:
+                writer = pd.ExcelWriter(alt_filepath, engine='openpyxl')
+                filepath = alt_filepath
+                filename = alt_filename
+            except Exception as e:
+                print(f"\nFAILED: Could not create {filename}: {e}")
+                import traceback
+                traceback.print_exc()
+                return False
+        except Exception as e:
+            print(f"\nFAILED: Could not create {filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+        
+        try:
+            with writer as w:
+                print(f"Creating {filename}...")
+                
+                # Get 7th semester courses
+                if 'course' not in self.dfs:
+                    print("ERROR: Course data not found")
+                    return False
+                
+                course_df = self.dfs['course']
+                if 'Semester' not in course_df.columns:
+                    print("ERROR: Semester column not found")
+                    return False
+                
+                # Filter 7th semester courses
+                temp_df = course_df.copy()
+                temp_df['Semester'] = pd.to_numeric(temp_df['Semester'], errors='coerce')
+                sem7_courses = temp_df[temp_df['Semester'] == semester].copy()
+                
+                # Separate baskets and non-basket courses
+                if 'Course Code' not in sem7_courses.columns:
+                    print("ERROR: Course Code column not found")
+                    return False
+                
+                # Identify baskets (pattern: 7B1, 7B2, 7B3, 7B4, etc.)
+                basket_mask = sem7_courses['Course Code'].astype(str).str.match(r'^7B\d+', na=False)
+                baskets = sem7_courses[basket_mask].copy()
+                non_basket_courses = sem7_courses[~basket_mask].copy()
+                
+                print(f"Found {len(baskets)} baskets: {', '.join(baskets['Course Code'].astype(str).tolist()) if not baskets.empty else 'None'}")
+                print(f"Found {len(non_basket_courses)} non-basket courses")
+                
+                # 1. Generate unified timetable with baskets
+                # For 7th semester: classes only from 9:00 AM to 5:30 PM
+                from config import DAYS, TEACHING_SLOTS, LECTURE_DURATION
+                from config import LUNCH_SLOTS
+                
+                # Filter slots to only include 9:00 AM to 5:30 PM (17:30)
+                # Slots start from '09:00-09:30' and go until '17:00-17:30'
+                sem7_slots = [s for s in TEACHING_SLOTS if s >= '09:00-09:30' and s <= '17:00-17:30']
+                
+                schedule = pd.DataFrame(index=DAYS, columns=sem7_slots)
+                for day in DAYS:
+                    for slot in sem7_slots:
+                        schedule.loc[day, slot] = 'Free'
+                
+                # Mark lunch slots
+                for day in DAYS:
+                    for lunch_slot in LUNCH_SLOTS:
+                        if lunch_slot in schedule.columns:
+                            schedule.loc[day, lunch_slot] = 'LUNCH BREAK'
+                
+                # Schedule baskets - assign each basket to different time slots
+                # Each basket gets 2 lectures per week (for 7th semester)
+                import random
+                basket_codes = baskets['Course Code'].astype(str).tolist() if not baskets.empty else []
+                
+                # Schedule each basket with 2 lectures per week
+                for basket_code in basket_codes:
+                    scheduled = 0
+                    attempts = 0
+                    max_attempts = 100
+                    
+                    while scheduled < 2 and attempts < max_attempts:
+                        attempts += 1
+                        day = random.choice(DAYS)
+                        # Avoid lunch slots - use only sem7_slots
+                        available_slots = [s for s in sem7_slots if s not in LUNCH_SLOTS]
+                        if not available_slots:
+                            continue
+                        
+                        start_slot = random.choice(available_slots)
+                        try:
+                            start_idx = sem7_slots.index(start_slot)
+                            end_idx = start_idx + LECTURE_DURATION
+                            if end_idx > len(sem7_slots):
+                                continue
+                            slots = sem7_slots[start_idx:end_idx]
+                            
+                            # Check if all slots are free
+                            if all(schedule.loc[day, s] == 'Free' for s in slots):
+                                # Check if any slot is lunch
+                                if any(s in LUNCH_SLOTS for s in slots):
+                                    continue
+                                
+                                # Assign basket to these slots
+                                for slot in slots:
+                                    schedule.loc[day, slot] = basket_code
+                                scheduled += 1
+                        except (ValueError, IndexError):
+                            continue
+                
+                # Write main timetable
+                clean_schedule = schedule.replace('Free', '-')
+                clean_schedule.to_excel(w, sheet_name='Timetable', index=True, startrow=0)
+                
+                # Apply color coding
+                try:
+                    ws = w.sheets['Timetable']
+                    self._apply_color_coding(ws, clean_schedule, start_row=1, start_col=1)
+                except Exception as e:
+                    print(f"    WARNING: Could not apply color coding: {e}")
+                
+                print(f"    SUCCESS: Main timetable created with {len(basket_codes)} baskets")
+                
+                # 2. Create basket assignments sheet
+                # Check if there's a "7th sem " sheet with basket assignments
+                basket_assignments = pd.DataFrame(columns=['Basket Code', 'Course Code', 'Course Name', 'Department', 'LTPSC', 'Credits', 'Instructor'])
+                
+                # Look for 7th sem sheet in data_frames
+                sem7_sheet_key = None
+                for key in self.dfs.keys():
+                    key_lower = key.lower()
+                    # Match patterns like "course_7th_sem", "7th_sem", etc.
+                    if ('7th' in key_lower and 'sem' in key_lower) or key_lower == '7th_sem_':
+                        sem7_sheet_key = key
+                        break
+                
+                if sem7_sheet_key and sem7_sheet_key in self.dfs:
+                    sem7_sheet_df = self.dfs[sem7_sheet_key]
+                    print(f"    Found 7th semester sheet: {sem7_sheet_key} with {len(sem7_sheet_df)} courses")
+                    
+                    # Map columns from the sheet to our format
+                    basket_col = None
+                    course_code_col = None
+                    course_name_col = None
+                    faculty_col = None
+                    
+                    for col in sem7_sheet_df.columns:
+                        col_lower = str(col).lower()
+                        if 'basket' in col_lower:
+                            basket_col = col
+                        elif 'course code' in col_lower:
+                            course_code_col = col
+                        elif col_lower == 'course' or 'course name' in col_lower:
+                            course_name_col = col
+                        elif 'faculty' in col_lower or 'instructor' in col_lower:
+                            faculty_col = col
+                    
+                    if basket_col and course_code_col:
+                        # Build basket assignments dataframe
+                        for _, row in sem7_sheet_df.iterrows():
+                            basket_code = str(row.get(basket_col, '')).strip()
+                            course_code = str(row.get(course_code_col, '')).strip()
+                            course_name = str(row.get(course_name_col, '')).strip() if course_name_col else ''
+                            instructor = str(row.get(faculty_col, '')).strip() if faculty_col else ''
+                            
+                            # Try to get additional info from main course data if available
+                            dept = ''
+                            ltpsc = ''
+                            credits = ''
+                            
+                            if not course_df.empty and 'Course Code' in course_df.columns:
+                                course_match = course_df[course_df['Course Code'].astype(str) == course_code]
+                                if not course_match.empty:
+                                    match_row = course_match.iloc[0]
+                                    dept = str(match_row.get('Department', '')) if 'Department' in match_row else ''
+                                    ltpsc = str(match_row.get('LTPSC', '')) if 'LTPSC' in match_row else ''
+                                    credits = str(match_row.get('Credits', '')) if 'Credits' in match_row else ''
+                            
+                            basket_assignments = pd.concat([
+                                basket_assignments,
+                                pd.DataFrame([{
+                                    'Basket Code': basket_code,
+                                    'Course Code': course_code,
+                                    'Course Name': course_name,
+                                    'Department': dept,
+                                    'LTPSC': ltpsc,
+                                    'Credits': credits,
+                                    'Instructor': instructor
+                                }])
+                            ], ignore_index=True)
+                else:
+                    # No 7th sem sheet found - create empty rows for each basket
+                    if not baskets.empty:
+                        for _, basket_row in baskets.iterrows():
+                            basket_code = str(basket_row.get('Course Code', ''))
+                            basket_assignments = pd.concat([
+                                basket_assignments,
+                                pd.DataFrame([{
+                                    'Basket Code': basket_code,
+                                    'Course Code': '',
+                                    'Course Name': '',
+                                    'Department': '',
+                                    'LTPSC': '',
+                                    'Credits': '',
+                                    'Instructor': ''
+                                }])
+                            ], ignore_index=True)
+                
+                basket_assignments.to_excel(w, sheet_name='Basket_Assignments', index=False)
+                print(f"    SUCCESS: Basket assignments sheet created with {len(basket_assignments)} entries")
+                
+                print(f"\nSUCCESS: Created {filename}")
+                print(f"  - Unified timetable with baskets (9:00 AM - 5:30 PM, 2 classes per basket)")
+                print(f"  - Basket assignments sheet")
+            
+            return True
+            
+        except Exception as e:
+            print(f"\nFAILED: Could not create {filename}: {e}")
+            import traceback
+            traceback.print_exc()
+            return False

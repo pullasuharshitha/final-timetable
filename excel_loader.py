@@ -77,6 +77,20 @@ class ExcelLoader:
                     print(f"Columns: {df.columns.tolist()}")
                     print(f"First few rows:")
                     print(df.head())
+                    
+                    # Check for additional sheets in course_data.xlsx (e.g., "7th sem " sheet)
+                    if filename == 'course_data.xlsx':
+                        try:
+                            xl_file = pd.ExcelFile(filepath)
+                            for sheet_name in xl_file.sheet_names:
+                                if sheet_name.lower() not in ['course data', 'sheet1'] and sheet_name.strip():
+                                    sheet_df = pd.read_excel(filepath, sheet_name=sheet_name)
+                                    # Store with a key based on sheet name
+                                    sheet_key = f"course_{sheet_name.strip().lower().replace(' ', '_')}"
+                                    data_frames[sheet_key] = sheet_df
+                                    print(f"SUCCESS: Loaded additional sheet '{sheet_name}' from {filename} ({len(sheet_df)} records)")
+                        except Exception as e:
+                            print(f"INFO: Could not load additional sheets from {filename}: {e}")
                 else:
                     print(f"ERROR: File not found: {filepath}")
                     return None
